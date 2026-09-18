@@ -77,6 +77,7 @@ def fetch_tiktok(url: str) -> dict:
         "thumbnail": d.get("cover") or d.get("origin_cover"),
         "author": (d.get("author") or {}).get("nickname"),
         "no_watermark": True,
+        "headers": {},
     }
 
 
@@ -109,8 +110,12 @@ def fetch_with_ytdlp(url: str) -> dict:
         info = info["entries"][0]
 
     video_url = info.get("url")
+    # Headers yt-dlp resolved for the top-level info.
+    dl_headers = dict(info.get("http_headers") or {})
+
     if not video_url and info.get("formats"):
         formats = info["formats"]
+        chosen = None
         # 1) Prefer a format with BOTH video and audio (progressive).
         for f in reversed(formats):
             if (
@@ -118,14 +123,18 @@ def fetch_with_ytdlp(url: str) -> dict:
                 and f.get("vcodec") not in (None, "none")
                 and f.get("acodec") not in (None, "none")
             ):
-                video_url = f["url"]
+                chosen = f
                 break
         # 2) Otherwise, any format that has a video stream.
-        if not video_url:
+        if not chosen:
             for f in reversed(formats):
                 if f.get("url") and f.get("vcodec") not in (None, "none"):
-                    video_url = f["url"]
+                    chosen = f
                     break
+        if chosen:
+            video_url = chosen["url"]
+            if chosen.get("http_headers"):
+                dl_headers = dict(chosen["http_headers"])
 
     if not video_url:
         raise RuntimeError("Could not extract a direct video URL.")
@@ -136,6 +145,7 @@ def fetch_with_ytdlp(url: str) -> dict:
         "thumbnail": info.get("thumbnail"),
         "author": info.get("uploader"),
         "no_watermark": True,
+        "headers": dl_headers,
     }
 
 
@@ -171,6 +181,37 @@ def index():
     return render_template("index.html")
 
 
+# Small in-memory cache mapping a token -> resolved download headers.
+# Keeps direct CDN URLs working (esp. Facebook) without bloating the query string.
+import hashlib
+import time
+
+_HEADER_CACHE = {}
+_CACHE_TTL = 60 * 60  # 1 hour
+
+
+def _cache_headers(video_url: str, headers: dict) -> str:
+    token = hashlib.sha1((video_url + str(time.time())).encode()).hexdigest()[:16]
+    _HEADER_CACHE[token] = (headers, time.time())
+    # Opportunistic cleanup of expired entries.
+    now = time.time()
+    expired = [k for k, (_, ts) in _HEADER_CACHE.items() if now - ts > _CACHE_TTL]
+    for k in expired:
+        _HEADER_CACHE.pop(k, None)
+    return token
+
+
+def _get_cached_headers(token: str) -> dict:
+    entry = _HEADER_CACHE.get(token)
+    if not entry:
+        return {}
+    headers, ts = entry
+    if time.time() - ts > _CACHE_TTL:
+        _HEADER_CACHE.pop(token, None)
+        return {}
+    return headers or {}
+
+
 @app.route("/api/info", methods=["POST"])
 def api_info():
     """Return video metadata + a resolved direct URL for the given link."""
@@ -203,6 +244,9 @@ def api_info():
         return jsonify({"error": f"ដោនឡូតបរាជ័យ: {msg}"}), 502
 
     info["platform"] = platform
+    # Cache resolved headers and hand the frontend a token to reuse them.
+    info["token"] = _cache_headers(info["video_url"], info.get("headers") or {})
+    info.pop("headers", None)  # don't leak headers to the client
     return jsonify(info)
 
 
@@ -228,6 +272,7 @@ def download():
     from urllib.parse import quote
 
     video_url = request.args.get("url")
+    token = request.args.get("token") or ""
     raw_name = request.args.get("name") or "video"
     unicode_name = safe_filename(raw_name) + ".mp4"
     ascii_name = ascii_fallback(safe_filename(raw_name)) + ".mp4"
@@ -235,20 +280,26 @@ def download():
     if not video_url:
         return "Missing url", 400
 
-    req_headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "*/*",
-    }
+    # Start with the exact headers yt-dlp resolved (crucial for Facebook CDN),
+    # then fill in sensible defaults.
+    req_headers = dict(_get_cached_headers(token))
+    req_headers.setdefault("User-Agent", USER_AGENT)
+    req_headers.setdefault("Accept", "*/*")
     ref = cdn_referer(video_url)
     if ref:
-        req_headers["Referer"] = ref
+        req_headers.setdefault("Referer", ref)
+
+    # Forward the browser's Range header so seeking / res works.
+    range_header = request.headers.get("Range")
+    if range_header:
+        req_headers["Range"] = range_header
 
     try:
         remote = requests.get(
             video_url,
             headers=req_headers,
             stream=True,
-            timeout=(15, 120),  # (connect, read)
+            timeout=(15, 300),  # (connect, read)
         )
         remote.raise_for_status()
     except requests.RequestException:
