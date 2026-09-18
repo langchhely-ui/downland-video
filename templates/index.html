@@ -225,9 +225,8 @@
           thumb.style.display = "none";
         }
 
-        const dlUrl = "/download?url=" + encodeURIComponent(data.video_url) +
-                      "&name=" + encodeURIComponent(data.title || "video") +
-                      "&token=" + encodeURIComponent(data.token || "");
+        const dlUrl = "/download?source=" + encodeURIComponent(data.source) +
+                      "&name=" + encodeURIComponent(data.title || "video");
         document.getElementById("dlLink").href = dlUrl;
 
         setStatus("");
