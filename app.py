@@ -226,6 +226,9 @@ def api_info():
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": f"ដោនឡូតបរាជ័យ: {friendly_error(exc)}"}), 502
 
+    # Facebook CDN blocks datacenter IPs, so the Render server cannot proxy it.
+    # For Facebook we hand the direct CDN URL to the browser, which downloads
+    # from the user's own (residential) IP. TikTok keeps the clean proxy path.
     return jsonify(
         {
             "title": info["title"],
@@ -233,8 +236,10 @@ def api_info():
             "author": info.get("author"),
             "platform": platform,
             "no_watermark": True,
-            # The frontend sends this back to /download so we can re-resolve.
+            # Source page URL — used by /download (TikTok) to re-resolve.
             "source": url,
+            # Direct CDN URL — used by the browser for Facebook direct download.
+            "video_url": info["video_url"],
         }
     )
 
