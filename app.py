@@ -19,6 +19,7 @@ from flask import (
     jsonify,
     Response,
     stream_with_context,
+    redirect,
 )
 
 try:
@@ -205,9 +206,25 @@ def api_info():
     return jsonify(info)
 
 
+def cdn_referer(video_url: str) -> str:
+    """Return an appropriate Referer for the CDN hosting the video."""
+    u = video_url.lower()
+    if "tikwm" in u:
+        return "https://www.tikwm.com/"
+    if "tiktok" in u:
+        return "https://www.tiktok.com/"
+    if "fbcdn" in u or "facebook" in u:
+        return "https://www.facebook.com/"
+    return ""
+
+
 @app.route("/download")
 def download():
-    """Proxy the remote video so the browser saves it directly."""
+    """Proxy the remote video so the browser saves it directly.
+
+    Falls back to a redirect if the server cannot stream the file
+    (e.g. CDN blocks the host IP or the connection is dropped).
+    """
     from urllib.parse import quote
 
     video_url = request.args.get("url")
@@ -218,20 +235,35 @@ def download():
     if not video_url:
         return "Missing url", 400
 
-    remote = requests.get(
-        video_url,
-        headers={"User-Agent": USER_AGENT},
-        stream=True,
-        timeout=60,
-    )
-    remote.raise_for_status()
+    req_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "*/*",
+    }
+    ref = cdn_referer(video_url)
+    if ref:
+        req_headers["Referer"] = ref
+
+    try:
+        remote = requests.get(
+            video_url,
+            headers=req_headers,
+            stream=True,
+            timeout=(15, 120),  # (connect, read)
+        )
+        remote.raise_for_status()
+    except requests.RequestException:
+        # Can't proxy (blocked / timed out) -> let the browser fetch directly.
+        return redirect(video_url, code=302)
 
     content_type = remote.headers.get("Content-Type") or "video/mp4"
 
     def generate():
-        for chunk in remote.iter_content(chunk_size=8192):
-            if chunk:
-                yield chunk
+        try:
+            for chunk in remote.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+        finally:
+            remote.close()
 
     # RFC 5987: provide an ASCII fallback + a UTF-8 (URL-encoded) filename*.
     disposition = (
