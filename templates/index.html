@@ -166,6 +166,10 @@
         <div class="title" id="vtitle"></div>
         <div class="author" id="vauthor"></div>
         <a class="download-btn" id="dlLink"><button style="width:100%">💾 រក្សាទុកវីដេអូ (MP4)</button></a>
+        <p class="hint" id="fbHint" style="display:none; margin-top:10px;">
+          វីដេអូនឹងបើកក្នុង tab ថ្មី។ បើវាចាក់លេង៖ Right-click លើវីដេអូ →
+          "Save video as..." ដើម្បីរក្សាទុក។
+        </p>
       </div>
     </div>
 
@@ -225,9 +229,23 @@
           thumb.style.display = "none";
         }
 
-        const dlUrl = "/download?source=" + encodeURIComponent(data.source) +
-                      "&name=" + encodeURIComponent(data.title || "video");
-        document.getElementById("dlLink").href = dlUrl;
+        const dlLink = document.getElementById("dlLink");
+        const fbHint = document.getElementById("fbHint");
+
+        if (data.platform === "facebook") {
+          // Facebook CDN blocks the server IP, so download straight from the
+          // browser (user's own IP). Open the direct video URL in a new tab.
+          dlLink.href = data.video_url;
+          dlLink.target = "_blank";
+          dlLink.removeAttribute("download");
+          fbHint.style.display = "block";
+        } else {
+          // TikTok: proxy through the server for a clean .mp4 + Khmer filename.
+          dlLink.href = "/download?source=" + encodeURIComponent(data.source) +
+                        "&name=" + encodeURIComponent(data.title || "video");
+          dlLink.target = "_self";
+          fbHint.style.display = "none";
+        }
 
         setStatus("");
         resultEl.style.display = "block";
