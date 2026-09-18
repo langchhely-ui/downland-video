@@ -226,7 +226,8 @@
         }
 
         const dlUrl = "/download?url=" + encodeURIComponent(data.video_url) +
-                      "&name=" + encodeURIComponent(data.title || "video");
+                      "&name=" + encodeURIComponent(data.title || "video") +
+                      "&token=" + encodeURIComponent(data.token || "");
         document.getElementById("dlLink").href = dlUrl;
 
         setStatus("");
