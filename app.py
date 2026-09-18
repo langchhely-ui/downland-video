@@ -19,8 +19,6 @@ from flask import (
     render_template,
     request,
     jsonify,
-    Response,
-    stream_with_context,
     redirect,
 )
 
@@ -246,15 +244,14 @@ def api_info():
 
 @app.route("/download")
 def download():
-    """Re-resolve the video from its source page URL, then stream it.
+    """Re-resolve the source URL and redirect the browser to the direct video.
 
-    Being stateless (no cross-request cache) makes this work reliably across
-    multiple gunicorn workers, and guarantees fresh CDN URLs + headers.
+    We do NOT proxy the bytes through this server. Datacenter IPs (Render, etc.)
+    get throttled/blocked by TikTok & Facebook CDNs, which caused downloads to
+    fail. Redirecting lets the browser (user's own residential IP) fetch the
+    file directly, which is reliable and fast.
     """
-    from urllib.parse import quote
-
     source = request.args.get("source")
-    raw_name = request.args.get("name") or "video"
 
     if not source:
         return "Missing source", 400
@@ -263,62 +260,12 @@ def download():
     if platform == "unknown":
         return "Unsupported URL", 400
 
-    # Resolve fresh, right before streaming.
     try:
         info = resolve(source, platform)
     except Exception as exc:  # noqa: BLE001
         return f"Resolve failed: {clean_error(exc)}", 502
 
-    video_url = info["video_url"]
-    req_headers = dict(info.get("headers") or {})
-    req_headers.setdefault("User-Agent", USER_AGENT)
-    req_headers.setdefault("Accept", "*/*")
-
-    # Forward the browser's Range header so seeking works.
-    range_header = request.headers.get("Range")
-    if range_header:
-        req_headers["Range"] = range_header
-
-    try:
-        remote = requests.get(
-            video_url,
-            headers=req_headers,
-            stream=True,
-            timeout=(15, 300),
-        )
-        remote.raise_for_status()
-    except requests.RequestException:
-        # Last resort: let the browser try the direct URL.
-        return redirect(video_url, code=302)
-
-    content_type = remote.headers.get("Content-Type") or "video/mp4"
-
-    unicode_name = safe_filename(raw_name) + ".mp4"
-    ascii_name = ascii_fallback(safe_filename(raw_name)) + ".mp4"
-
-    def generate():
-        try:
-            for chunk in remote.iter_content(chunk_size=65536):
-                if chunk:
-                    yield chunk
-        finally:
-            remote.close()
-
-    disposition = (
-        "attachment; "
-        f'filename="{ascii_name}"; '
-        f"filename*=UTF-8''{quote(unicode_name)}"
-    )
-    resp_headers = {"Content-Disposition": disposition}
-    length = remote.headers.get("Content-Length")
-    if length:
-        resp_headers["Content-Length"] = length
-
-    return Response(
-        stream_with_context(generate()),
-        headers=resp_headers,
-        content_type=content_type,
-    )
+    return redirect(info["video_url"], code=302)
 
 
 if __name__ == "__main__":
